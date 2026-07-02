@@ -1,0 +1,52 @@
+name: finance-news-bot
+
+on:
+  schedule:
+    - cron: "40 22 * * *"
+    - cron: "40 3 * * *"
+    - cron: "10 8 * * *"
+    - cron: "40 12 * * *"
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "手动触发时指定时段"
+        required: false
+        default: "morning"
+        type: choice
+        options: [morning, noon, afternoon, evening]
+
+jobs:
+  push-brief:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Decide slot from cron
+        id: slot
+        run: |
+          case "${{ github.event.schedule }}" in
+            "40 22 * * *") echo "slot=morning"   >> "$GITHUB_OUTPUT" ;;
+            "40 3 * * *")  echo "slot=noon"       >> "$GITHUB_OUTPUT" ;;
+            "10 8 * * *")  echo "slot=afternoon"  >> "$GITHUB_OUTPUT" ;;
+            "40 12 * * *") echo "slot=evening"    >> "$GITHUB_OUTPUT" ;;
+            *)             echo "slot=${{ github.event.inputs.slot }}" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Run
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python main.py --slot ${{ steps.slot.outputs.slot }}
