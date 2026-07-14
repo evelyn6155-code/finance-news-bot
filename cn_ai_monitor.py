@@ -39,7 +39,7 @@ COMPANIES = [
     {"name": "智谱AI",   "code": "02513", "market": "HK", "tier": "head", "aliases": ["智谱", "GLM", "Z.ai"]},
     {"name": "DeepSeek", "code": "",      "market": "NA", "tier": "head", "aliases": ["DeepSeek", "深度求索", "梁文锋", "幻方"]},
     {"name": "月之暗面",  "code": "",      "market": "NA", "tier": "head", "aliases": ["月之暗面", "Kimi", "Moonshot", "杨植麟"]},
-    {"name": "MiniMax",  "code": "00100", "market": "HK", "tier": "head", "aliases": ["MiniMax", "稀宇", "海螺"]},
+    {"name": "MiniMax",  "code": "00100", "market": "HK", "tier": "head", "aliases": ["MiniMax", "稀宇"]},
     {"name": "阶跃星辰",  "code": "",      "market": "NA", "tier": "head", "aliases": ["阶跃星辰", "StepFun", "阶跃"]},
     {"name": "百川智能",  "code": "",      "market": "NA", "tier": "full", "aliases": ["百川智能", "王小川"]},
     {"name": "零一万物",  "code": "",      "market": "NA", "tier": "full", "aliases": ["零一万物", "李开复"]},
@@ -53,7 +53,7 @@ COMPANIES = [
     {"name": "海光信息",  "code": "688041", "market": "A",  "tier": "head", "aliases": ["海光信息", "海光"]},
     {"name": "长鑫存储",  "code": "",      "market": "NA", "tier": "full", "aliases": ["长鑫存储", "长鑫", "CXMT"]},
     {"name": "长江存储",  "code": "",      "market": "NA", "tier": "full", "aliases": ["长江存储", "YMTC"]},
-    {"name": "中科曙光",  "code": "603019", "market": "A",  "tier": "full", "aliases": ["中科曙光", "曙光"]},
+    {"name": "中科曙光",  "code": "603019", "market": "A",  "tier": "full", "aliases": ["中科曙光"]},
     {"name": "浪潮信息",  "code": "000977", "market": "A",  "tier": "full", "aliases": ["浪潮信息"]},
     {"name": "工业富联",  "code": "601138", "market": "A",  "tier": "head", "aliases": ["工业富联"]},
     {"name": "润泽科技",  "code": "300442", "market": "A",  "tier": "head", "aliases": ["润泽科技"]},
@@ -75,7 +75,7 @@ COMPANIES = [
     {"name": "第四范式",  "code": "06682", "market": "HK", "tier": "full", "aliases": ["第四范式"]},
     {"name": "星环科技",  "code": "688031", "market": "A",  "tier": "full", "aliases": ["星环科技"]},
     {"name": "拓尔思",   "code": "300229", "market": "A",  "tier": "full", "aliases": ["拓尔思"]},
-    {"name": "神州数码",  "code": "000034", "market": "A",  "tier": "full", "aliases": ["神州数码", "昇腾"]},
+    {"name": "神州数码",  "code": "000034", "market": "A",  "tier": "full", "aliases": ["昇腾"]},
     {"name": "东方国信",  "code": "300166", "market": "A",  "tier": "full", "aliases": ["东方国信"]},
     {"name": "弘信电子",  "code": "300657", "market": "A",  "tier": "full", "aliases": ["弘信电子"]},
     {"name": "鸿博股份",  "code": "002229", "market": "A",  "tier": "full", "aliases": ["鸿博股份", "英博数科"]},
@@ -149,7 +149,7 @@ def fetch_flash_all():
                 rows.append(mk(r))
         except Exception as e:
             rows.append({"_err": f"{getattr(fn,'__name__','?')}: {e}"})
-    grab(ak.stock_info_global_cls, "重点",
+    grab(ak.stock_info_global_cls, "全部",
          lambda r: {"title": str(r.get("标题") or "").strip(), "text": str(r.get("内容") or "").strip(),
                     "time": _parse(r.get("发布时间")), "src": "财联社·重点", "url": "https://www.cls.cn/telegraph"})
     grab(ak.stock_info_global_sina, None,
