@@ -2,13 +2,12 @@
 name: cn-ai-monitor
 
 on:
-  workflow_dispatch:            # 手动触发(首跑用这个)
+  workflow_dispatch:
     inputs:
       mode:
         description: "head 或 full"
         default: "head"
   schedule:
-    # UTC 时间。23:30 UTC = 次日 07:30 北京时间(能收前一晚的晚间公告, 上班前送达)
     - cron: "30 23 * * *"
 
 jobs:
@@ -23,7 +22,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: pip install akshare pandas
+        run: pip install akshare pandas feedparser
 
       - name: Decide MODE
         id: m
@@ -31,7 +30,6 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
           else
-            # 每 3 天(按年内第几天整除)跑一次 full, 其余日跑 head。full 已包含 head。
             if [ $(( $(date +%j | sed 's/^0*//') % 3 )) -eq 0 ]; then
               echo "mode=full" >> $GITHUB_OUTPUT
             else
@@ -43,6 +41,9 @@ jobs:
         env:
           MODE: ${{ steps.m.outputs.mode }}
         run: python cn_ai_monitor.py
+
+      - name: Collect intl (外媒 RSS)
+        run: python intl_monitor.py
 
       - name: Write article & send mail
         env:
@@ -64,4 +65,5 @@ jobs:
           path: |
             report.md
             report.json
-          retention-days: 14
+            report_intl.md
+            report_intl.json
