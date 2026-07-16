@@ -308,10 +308,10 @@ def collect_slow():
             if not co["en"]:
                 continue
             try:
-                q = urllib.parse.quote(co["en"])
+                q = urllib.parse.quote(co["en"] + " when:2d")  # 让结果偏向最近48小时
                 feed = feedparser.parse(
                     f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en")
-                for e in feed.entries[:12]:
+                for e in feed.entries[:25]:
                     tp = getattr(e, "published_parsed", None)
                     if not tp:
                         continue
@@ -333,19 +333,19 @@ def collect_slow():
     return items, errs
 
 
-def translate_new(items, known_ids):
-    """把新抓到的英文外媒标题批量译成中文, 写入 zh 字段。
-    只翻 known_ids 里没有的(即真正的新条目), 避免每轮重复翻译烧钱。
-    没配 DEEPSEEK_API_KEY 或调用失败 → 静默跳过, 页面照常显示英文原标题。"""
+def translate_missing(items):
+    """给所有还没有中文译文的英文外媒标题补译, 写入 zh 字段。
+    按“缺不缺译文”判断, 而不是“是不是新条目”——否则存量条目永远等不到翻译。
+    译过一次就存住, 不会重复翻。没配 key 或失败 → 跳过, 页面照常显示英文。"""
     key = os.getenv("DEEPSEEK_API_KEY")
     if not key:
         return
     todo = [i for i in items
-            if i["id"] not in known_ids and i.get("kind") == "外媒"
+            if not i.get("zh") and i.get("kind") == "外媒"
             and sum(c.isascii() and c.isalpha() for c in i["title"]) >= 8]
     if not todo:
         return
-    todo = todo[:120]                      # 单轮上限, 防止意外烧钱
+    todo = todo[:150]                      # 单轮上限, 防止意外烧钱
     import urllib.request
     payload = [{"id": n, "t": it["title"][:160]} for n, it in enumerate(todo)]
     prompt = ("把下面 JSON 数组里每条英文财经新闻标题翻成简洁准确的中文。"
@@ -370,7 +370,7 @@ def translate_new(items, known_ids):
             if 0 <= i < len(todo) and v:
                 todo[i]["zh"] = str(v).strip()
                 n += 1
-        print(f"[translate] 新译 {n}/{len(todo)} 条外媒标题")
+        print(f"[translate] 本轮补译 {n}/{len(todo)} 条外媒标题")
     except Exception as e:
         print("[warn] 翻译失败, 保留英文原标题:", e)
 
@@ -451,9 +451,8 @@ def run(mode):
         new, errs = collect_slow()
     else:
         new, errs = collect_fast()
-    known = {i["id"] for i in data.get("items", [])}
-    translate_new(new, known)          # 只翻真正的新条目
     items, added = merge(data.get("items", []), new)
+    translate_missing(items)           # 对全部缺译文的外媒条目补译(含存量)
     now = dt.datetime.now(UTC).isoformat()
     data["items"] = items
     data["updated_" + mode] = now
