@@ -16,6 +16,8 @@
 body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;
      line-height:1.6;-webkit-font-smoothing:antialiased}
 .wrap{max-width:960px;margin:0 auto;padding:0 16px 64px}
+
+/* ── header ── */
 header{position:sticky;top:0;z-index:10;background:var(--bg);
        border-bottom:1px solid var(--rule);padding:16px 0 0}
 .hd{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
@@ -36,6 +38,8 @@ input[type=search]{font-family:var(--sans);font-size:12px;padding:6px 10px;borde
       border-radius:2px;background:var(--surface);width:170px;color:var(--ink)}
 input[type=search]:focus{outline:2px solid var(--link);outline-offset:-1px}
 .chk{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer}
+
+/* ── company ── */
 .co{background:var(--surface);border:1px solid var(--rule);border-radius:2px;
     padding:12px 14px;margin-top:10px}
 .co-hd{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -49,6 +53,8 @@ input[type=search]:focus{outline:2px solid var(--link);outline-offset:-1px}
 .tick.on{background:var(--ink)}
 .tick.hot{background:var(--signal)}
 .co-n{font-family:var(--mono);font-size:11px;color:var(--muted);min-width:34px;text-align:right}
+
+/* ── items ── */
 ul{list-style:none;margin-top:8px;border-top:1px solid var(--rule);padding-top:6px}
 li{display:flex;gap:10px;padding:4px 0;font-size:13px;align-items:baseline}
 li+li{border-top:1px solid var(--wash)}
@@ -94,24 +100,42 @@ footer{margin-top:28px;padding-top:10px;border-top:1px solid var(--rule);
 </div>
 <script>
 const S={g:"all",s:"heat",q:"",ann:false};let DATA=null;
+
 const H=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const mins=t=>(Date.now()-new Date(t))/6e4;
 function rel(t){const m=mins(t);
   if(m<1)return "刚刚";if(m<60)return Math.floor(m)+"分钟前";
   if(m<1440)return Math.floor(m/60)+"小时前";return Math.floor(m/1440)+"天前";}
-function heat(items){let h=0;for(const i of items){
-  const w=i.kind==="公告"?3:1.5,m=mins(i.time);
-  h+=w*(m<60?3:m<360?2:m<1440?1:.4);}return h;}
+function md(t){const d=new Date(t);
+  return (d.getMonth()+1)+"-"+String(d.getDate()).padStart(2,"0");}
+// exact=false 表示只知道日期(如公告), 显示日期而非“几分钟前”, 绝不假装很新
+function stamp(i){return i.exact===false?md(i.time):rel(i.time);}
+function isFresh(i){return i.exact!==false&&mins(i.time)<30;}
+function heat(items){
+  const s=[...items].sort((a,b)=>new Date(b.time)-new Date(a.time));
+  let h=0,n=0;
+  for(const i of s){
+    const w=i.kind==="公告"?3:1.5;
+    const m=mins(i.time);
+    const f=i.exact===false?0.8:(m<60?3:m<360?2:m<1440?1:.4);
+    h+=w*f/(1+n*0.6);   // 同一家里越靠后的条目权重递减, 防止刷屏霸榜
+    n++;
+  }
+  return h;}
+
 function group(items){const m=new Map();
   for(const i of items){if(!m.has(i.company))m.set(i.company,{...i,items:[]});
     m.get(i.company).items.push(i);}return [...m.values()];}
-function ticks(items){
+
+function ticks(items){/* 24 格, 每格 1 小时, 右侧为现在 */
   const b=Array(24).fill(0);
-  for(const i of items){const h=Math.floor(mins(i.time)/60);if(h<24)b[23-h]++;}
+  for(const i of items){if(i.exact===false)continue;
+    const h=Math.floor(mins(i.time)/60);if(h<24)b[23-h]++;}
   return '<div class="ticks" title="近24小时消息分布">'+b.map((n,idx)=>{
     const cls=n===0?"tick":(idx>=21?"tick hot":"tick on");
     const ht=n===0?4:Math.min(11,4+n*3);
     return `<span class="${cls}" style="height:${ht}px"></span>`;}).join("")+'</div>';}
+
 function render(){
   const m=document.getElementById("main");
   if(!DATA){m.innerHTML='<div class="empty">加载中…</div>';return;}
@@ -126,14 +150,14 @@ function render(){
                        :(a,b)=>a.pri-b.pri||b.heat-a.heat);
   if(!cos.length){m.innerHTML='<div class="empty">没有符合条件的公司。<br>换个筛选条件,或等下一次抓取。</div>';return;}
   m.innerHTML=cos.map(c=>{
-    const fresh=c.items.some(i=>mins(i.time)<30);
+    const fresh=c.items.some(isFresh);
     const code=c.code?`<span class="co-code">${H(c.code)}.${H(c.market)}</span>`:"";
     const li=c.items.slice(0,8).map(i=>{
-      const f=mins(i.time)<30?" fresh":"";
+      const f=isFresh(i)?" fresh":"";
       const k=i.kind==="公告"?"kind ann":"kind";
       const a=i.url?`<a href="${H(i.url)}" target="_blank" rel="noopener">（${H(i.src)}）</a>`
                    :`<span class="co-code">（${H(i.src)}）</span>`;
-      return `<li><span class="ts${f}" title="${H(i.time)}">${rel(i.time)}</span>
+      return `<li><span class="ts${f}" title="${H(i.time)}">${stamp(i)}</span>
         <span class="tx"><span class="${k}">${H(i.kind)}</span>${H(i.title)} ${a}</span></li>`;
     }).join("");
     return `<section class="co"><div class="co-hd">
@@ -142,6 +166,7 @@ function render(){
       ${ticks(c.items)}<span class="co-n">${c.items.length}条</span>
     </div><ul>${li}</ul></section>`;}).join("");
 }
+
 function meta(){
   const el=document.getElementById("meta");
   if(!DATA){return;}
@@ -150,8 +175,9 @@ function meta(){
   el.textContent=`快讯/A股公告 ${f} · 港股公告/外媒 ${s} · 监测 ${DATA.companies_total||"—"} 家`;
   document.getElementById("foot").innerHTML=
     `数据源: 财联社 / 新浪财经 / 同花顺 / 东方财富 / 富途牛牛 / 财新网 (快讯) · 东财公告大全 (A股公告) — 约15分钟一轮<br>巨潮资讯网 (港股公告) · Google News (外媒) — 约1小时一轮<br>
-     只收录名单内公司, 保留最近48小时。页面每60秒自动取新数据。`;
+     只收录名单内公司, 保留最近48小时。页面每60秒自动取新数据。<br>时间说明: 显示“几分钟前”的为精确到分的发布时间; 显示“月-日”的表示源站只提供日期(如公告), 不做推测。`;
 }
+
 async function load(){
   try{
     const r=await fetch("data.json?t="+Date.now(),{cache:"no-store"});
