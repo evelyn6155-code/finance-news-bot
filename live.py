@@ -47,7 +47,7 @@ COMPANIES = [
     C("零一万物", "国内", "", "NA", ["零一万物", "李开复"], "01.AI Kai-Fu Lee", 31),
     # ── 国内: 芯片 ──
     C("寒武纪", "国内", "688256", "A", ["寒武纪"], "Cambricon", 6),
-    C("海光信息", "国内", "688041", "A", ["海光信息", "海光"], "Hygon chip", 7),
+    C("海光信息", "国内", "688041", "A", ["海光信息"], "Hygon chip", 7),
     C("摩尔线程", "国内", "688795", "A", ["摩尔线程"], "Moore Threads", 8),
     C("沐曦股份", "国内", "688802", "A", ["沐曦"], "MetaX GPU China", 20),
     C("壁仞科技", "国内", "06082", "HK", ["壁仞"], "Biren Technology", 21),
@@ -387,6 +387,11 @@ def _t(v):
         return dt.datetime(1970, 1, 1, tzinfo=UTC)
 
 def merge(old_items, new_items):
+    # 旧版本写入的条目没有 exact 字段(时间戳是抓取时刻冒充的, 不可信) → 一律丢弃
+    dirty = [i for i in old_items if "exact" not in i]
+    if dirty:
+        print(f"[clean] 丢弃 {len(dirty)} 条旧版脏数据(时间戳不可信)")
+    old_items = [i for i in old_items if "exact" in i]
     by_id = {i["id"]: i for i in old_items}
     added = 0
     for it in new_items:
