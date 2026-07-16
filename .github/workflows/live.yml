@@ -1,0 +1,49 @@
+name: live
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "fast(快讯+A股公告) 或 slow(港股公告+外媒)"
+        default: "fast"
+  schedule:
+    - cron: "*/15 * * * *"
+    - cron: "7 * * * *"
+
+concurrency:
+  group: live
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install akshare pandas feedparser oss2
+
+      - name: Decide MODE
+        id: m
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.schedule }}" = "7 * * * *" ]; then
+            echo "mode=slow" >> $GITHUB_OUTPUT
+          else
+            echo "mode=fast" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Collect and upload to OSS
+        env:
+          MODE: ${{ steps.m.outputs.mode }}
+          OSS_KEY_ID: ${{ secrets.OSS_KEY_ID }}
+          OSS_KEY_SECRET: ${{ secrets.OSS_KEY_SECRET }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+        run: python live.py
