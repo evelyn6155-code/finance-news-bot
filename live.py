@@ -140,17 +140,41 @@ def _parse(ts, tz=CN):
         return dt.datetime.combine(d, dt.time(int(m.group(1)), int(m.group(2))), tzinfo=tz)
     return None
 
+
+TIME_KEYS = ("publishTime", "pubTime", "showTime", "createTime", "updateTime",
+             "newsTime", "time", "date", "publishDate", "pubDate")
+
+def _parse_epoch_or_str(d):
+    """从一条原始记录里找出真实时间; 找不到返回 None(调用方必须丢弃该条)。"""
+    for k in TIME_KEYS:
+        v = d.get(k)
+        if v in (None, "", 0):
+            continue
+        # 毫秒/秒时间戳
+        if isinstance(v, (int, float)) or (isinstance(v, str) and v.isdigit()):
+            n = int(v)
+            if n > 1e12:
+                n //= 1000
+            if 1e9 < n < 4e9:
+                return dt.datetime.fromtimestamp(n, CN)
+            continue
+        t = _parse(str(v))
+        if t:
+            return t
+    return None
+
 def _norm(t):
     return re.sub(r"[\s\W_]+", "", str(t)).lower()[:60]
 
 def mk_id(company, title):
     return hashlib.md5((company + "|" + _norm(title)).encode()).hexdigest()[:12]
 
-def mk_item(co, title, time, url, src, kind):
+def mk_item(co, title, time, url, src, kind, exact=True):
+    """exact=False 表示只知道日期、不知道具体时分, 页面不会显示“几分钟前”, 也不算新。"""
     return {"id": mk_id(co["name"], title), "company": co["name"], "group": co["group"],
             "code": co["code"], "market": co["market"], "pri": co["pri"],
             "title": title.strip(), "time": time.isoformat(), "url": url,
-            "src": src, "kind": kind}
+            "src": src, "kind": kind, "exact": bool(exact)}
 
 # ── fast: 国内快讯5源 + 东财公告大全 + 财新 ────────────────────────────────
 def collect_fast():
@@ -195,18 +219,38 @@ def collect_fast():
                 items.append(mk_item(co, f["title"] or f["text"][:60],
                                      f["time"], f["url"], f["src"], "快讯"))
 
-    # 财新: 常做批评性/调查性报道, 国内媒体链接记者点得开
+    # 财新: akshare 封装把时间字段丢了, 这里直连原始接口取真实发布时间。
+    # 原则: 拿不到可靠时间就整条丢弃, 绝不用“抓取时刻”冒充发布时间。
     try:
-        now = dt.datetime.now(CN)
-        df = ak.stock_news_main_cx()
-        for _, r in df.iterrows():
-            txt = str(r.get("summary") or r.get("tag") or "").strip()
+        import requests
+        r = requests.get("https://cxdata.caixin.com/api/dataplus/sjtPc/news",
+                         params={"pageNum": "1", "pageSize": "100", "showLabels": "true"},
+                         headers={"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                                "Chrome/143.0.0.0 Safari/537.36",
+                                  "referer": "https://cxdata.caixin.com/index/newsTab?tab=latest"},
+                         timeout=20)
+        rows = r.json()["data"]["data"]
+        if rows:
+            print("[debug] 财新原始字段:", sorted(rows[0].keys())[:20])
+            print("[debug] 财新首条样例:", {k: str(v)[:40] for k, v in list(rows[0].items())[:8]})
+        got, skipped = 0, 0
+        for d in rows:
+            t = _parse_epoch_or_str(d)
+            if t is None:
+                skipped += 1
+                continue
+            txt = str(d.get("summary") or d.get("title") or "").strip()
             if not txt:
                 continue
             for co in COMPANIES:
                 if any(a and a in txt for a in co["cn"]):
-                    items.append(mk_item(co, txt[:70], now,
-                                         str(r.get("url") or ""), "财新网", "快讯"))
+                    items.append(mk_item(co, txt[:80], t, str(d.get("url") or ""),
+                                         "财新网", "快讯", exact=True))
+                    got += 1
+        if skipped:
+            errs.append(f"财新: {skipped} 条无可靠时间已丢弃(字段可能变了)")
+        print(f"[debug] 财新命中 {got} 条, 丢弃 {skipped} 条")
     except Exception as e:
         errs.append(f"财新: {e}")
 
@@ -214,8 +258,8 @@ def collect_fast():
     try:
         a_map = {c["code"]: c for c in COMPANIES if c["market"] == "A" and c["code"]}
         now = dt.datetime.now(CN)
-        for d, stamp in ((now, now), (now - dt.timedelta(days=1),
-                                      (now - dt.timedelta(days=1)).replace(hour=23, minute=0))):
+        for d in (now, now - dt.timedelta(days=1)):
+            stamp = d.replace(hour=0, minute=0, second=0, microsecond=0)  # 只有日期, 不编时分
             df = ak.stock_notice_report(symbol="全部", date=d.strftime("%Y%m%d"))
             for _, r in df.iterrows():
                 code = str(r.get("代码", "")).strip()
@@ -225,8 +269,8 @@ def collect_fast():
                 title = str(r.get("公告标题", "")).strip()
                 if not any(k in title for k in MAJOR_KW):
                     continue
-                items.append(mk_item(co, title, stamp,
-                                     str(r.get("网址") or ""), "东财公告", "公告"))
+                items.append(mk_item(co, title, stamp, str(r.get("网址") or ""),
+                                     "东财公告", "公告", exact=False))
     except Exception as e:
         errs.append(f"东财公告大全: {e}")
     return items, errs
