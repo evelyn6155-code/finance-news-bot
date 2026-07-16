@@ -1,3 +1,4 @@
+# 放到仓库的 .github/workflows/live.yml
 name: live
 
 on:
@@ -7,11 +8,12 @@ on:
         description: "fast(快讯+A股公告) 或 slow(港股公告+外媒)"
         default: "fast"
   schedule:
-    - cron: "*/15 * * * *"
-    - cron: "7 * * * *"
+    - cron: "*/15 * * * *"   # 快线: 国内5个快讯源 + 东财公告大全(A股)
+    - cron: "7 */2 * * *"    # 慢线: 巨潮港股公告 + 外媒 Google News(每2小时)
 
+# fast 与 slow 用各自的锁, 否则 slow(20-40分钟)会把每15分钟的 fast 全挤掉
 concurrency:
-  group: live
+  group: live-${{ github.event.schedule || 'manual' }}
   cancel-in-progress: false
 
 jobs:
@@ -33,7 +35,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event.schedule }}" = "7 * * * *" ]; then
+          elif [ "${{ github.event.schedule }}" = "7 */2 * * *" ]; then
             echo "mode=slow" >> $GITHUB_OUTPUT
           else
             echo "mode=fast" >> $GITHUB_OUTPUT
@@ -46,4 +48,7 @@ jobs:
           OSS_KEY_SECRET: ${{ secrets.OSS_KEY_SECRET }}
           OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
           OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+          DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
         run: python live.py
