@@ -332,6 +332,48 @@ def collect_slow():
         errs.append("feedparser 未安装, 跳过外媒")
     return items, errs
 
+
+def translate_new(items, known_ids):
+    """把新抓到的英文外媒标题批量译成中文, 写入 zh 字段。
+    只翻 known_ids 里没有的(即真正的新条目), 避免每轮重复翻译烧钱。
+    没配 DEEPSEEK_API_KEY 或调用失败 → 静默跳过, 页面照常显示英文原标题。"""
+    key = os.getenv("DEEPSEEK_API_KEY")
+    if not key:
+        return
+    todo = [i for i in items
+            if i["id"] not in known_ids and i.get("kind") == "外媒"
+            and sum(c.isascii() and c.isalpha() for c in i["title"]) >= 8]
+    if not todo:
+        return
+    todo = todo[:120]                      # 单轮上限, 防止意外烧钱
+    import urllib.request
+    payload = [{"id": n, "t": it["title"][:160]} for n, it in enumerate(todo)]
+    prompt = ("把下面 JSON 数组里每条英文财经新闻标题翻成简洁准确的中文。"
+              "保留公司名、数字、专有名词; 不加评论、不解释。"
+              "只返回 JSON, 不要代码块标记, 格式: {\"0\":\"中文标题\",\"1\":\"...\"}\n\n"
+              + json.dumps(payload, ensure_ascii=False))
+    try:
+        base = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+        body = json.dumps({"model": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                           "temperature": 0.2,
+                           "messages": [{"role": "user", "content": prompt}]}).encode()
+        req = urllib.request.Request(base + "/chat/completions", data=body,
+              headers={"Authorization": "Bearer " + key,
+                       "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=180) as r:
+            txt = json.loads(r.read())["choices"][0]["message"]["content"]
+        txt = re.sub(r"^```(json)?|```$", "", txt.strip(), flags=re.M).strip()
+        res = json.loads(txt)
+        n = 0
+        for k, v in res.items():
+            i = int(k)
+            if 0 <= i < len(todo) and v:
+                todo[i]["zh"] = str(v).strip()
+                n += 1
+        print(f"[translate] 新译 {n}/{len(todo)} 条外媒标题")
+    except Exception as e:
+        print("[warn] 翻译失败, 保留英文原标题:", e)
+
 # ── 合并 / 落盘 ─────────────────────────────────────────────────────────────
 # ── 阿里云 OSS(香港桶): 数据既从这里读, 也写回这里 ──────────────────────────
 def _bucket():
@@ -409,6 +451,8 @@ def run(mode):
         new, errs = collect_slow()
     else:
         new, errs = collect_fast()
+    known = {i["id"] for i in data.get("items", [])}
+    translate_new(new, known)          # 只翻真正的新条目
     items, added = merge(data.get("items", []), new)
     now = dt.datetime.now(UTC).isoformat()
     data["items"] = items
