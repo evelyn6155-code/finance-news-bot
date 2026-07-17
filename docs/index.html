@@ -95,7 +95,7 @@ footer{margin-top:28px;padding-top:10px;border-top:1px solid var(--rule);
       <button data-g="国外" aria-pressed="false">国外公司</button>
     </div>
     <div class="seg" id="srt">
-      <button data-s="heat" aria-pressed="true">按热度</button>
+      <button data-s="heat" aria-pressed="true">最新优先</button>
       <button data-s="pri" aria-pressed="false">按重要性</button>
     </div>
     <input type="search" id="q" placeholder="搜公司 / 关键词">
@@ -126,16 +126,28 @@ function abs(t){const p=parts(t);return p.month+"-"+p.day+" "+p.hour+":"+p.minut
 function stamp(i){return i.exact===false?md(i.time)+" 公告":abs(i.time);}
 function isFresh(i){return i.exact!==false&&mins(i.time)<30;}
 function heat(items){
-  const s=[...items].sort((a,b)=>new Date(b.time)-new Date(a.time));
-  let h=0,n=0;
-  for(const i of s){
-    const w=i.kind==="公告"?3:1.5;
+  // 排序主导项 = 这家“最新一条有多新”, 而不是“这两天话多不多”。
+  // 记者一点开, 最该看到的是刚出事的公司, 不是攒了80条旧闻的公司。
+  let newest=Infinity, n1=0, n6=0, w=0;
+  for(const i of items){
+    const heavy = i.kind==="公告" ? 2 : 1;      // 公告比快讯重
+    w += heavy;
+    if(i.exact===false) continue;               // 只有日期的公告不参与新鲜度
     const m=mins(i.time);
-    const f=i.exact===false?0.8:(m<60?3:m<360?2:m<1440?1:.4);
-    h+=w*f/(1+n*0.6);   // 同一家里越靠后的条目权重递减, 防止刷屏霸榜
-    n++;
+    if(m<newest) newest=m;
+    if(m<60) n1+=heavy;
+    if(m<360) n6+=heavy;
   }
-  return h;}
+  let s=0;                                      // 新鲜度分档要够细, 否则大家都满分, 又变回拼数量
+  if(newest<5)        s+=200;
+  else if(newest<15)  s+=150;
+  else if(newest<30)  s+=120;
+  else if(newest<60)  s+=80;
+  else if(newest<180) s+=40;
+  else if(newest<360) s+=15;
+  s += n1*3 + n6*0.5 + w*0.03;                  // 同样新鲜时, 消息多的在前(权重压低)
+  return s;
+}
 
 function group(items){const m=new Map();
   for(const i of items){if(!m.has(i.company))m.set(i.company,{...i,items:[]});
