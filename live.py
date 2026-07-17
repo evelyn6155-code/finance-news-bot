@@ -170,12 +170,43 @@ def _norm(t):
 def mk_id(company, title):
     return hashlib.md5((company + "|" + _norm(title)).encode()).hexdigest()[:12]
 
-def mk_item(co, title, time, url, src, kind, exact=True):
+def mk_item(co, title, time, url, src, kind, exact=True, hit=""):
     """exact=False 表示只知道日期、不知道具体时分, 页面不会显示“几分钟前”, 也不算新。"""
     return {"id": mk_id(co["name"], title), "company": co["name"], "group": co["group"],
             "code": co["code"], "market": co["market"], "pri": co["pri"],
             "title": title.strip(), "time": time.isoformat(), "url": url,
-            "src": src, "kind": kind, "exact": bool(exact)}
+            "src": src, "kind": kind, "exact": bool(exact), "hit": hit}
+
+
+def snippet(text, hit, width=90):
+    """把摘要窗口对准命中的关键词。
+    以前固定截前60字, 导致“三星电子”出现在第80字时, 用户只看到满屏SK海力士,
+    看不出这条为什么归在三星底下——匹配依据和展示内容必须对得上。"""
+    text = re.sub(r"\s+", " ", str(text)).strip()
+    if not hit:
+        return text[:width]
+    p = text.find(hit)
+    if p < 0 or p + len(hit) <= width:
+        return text[:width]
+    start = max(0, p - 30)
+    return ("…" if start > 0 else "") + text[start:start + width]
+
+
+def pick_company(hay, head, cands):
+    """一条新闻可能提到多家公司, 这里挑出它主要在讲的那一家。
+    信号: ①公司名是否出现在标题/开头(最重要) ②被提到几次 ③第一次出现得多早。
+    只归一家, 不再"提到谁就往谁那儿放一份"——否则综述稿会到处刷屏。"""
+    best, best_score = None, -1.0
+    for co, hit in cands:
+        cnt = hay.count(hit)
+        pos = hay.find(hit)
+        score = cnt * 2.0
+        if hit in head:
+            score += 10.0                      # 出现在标题/开头 = 多半是主角
+        score += max(0.0, 5.0 - pos / 20.0)    # 越早出现越可能是主角
+        if score > best_score:
+            best, best_score = (co, hit), score
+    return best
 
 # ── fast: 国内快讯5源 + 东财公告大全 + 财新 ────────────────────────────────
 def collect_fast():
@@ -226,12 +257,20 @@ def collect_fast():
                 errs.append(err)
 
     items = []
-    for co in COMPANIES:
-        for f in flash:
-            hay = f["title"] + f["text"]
-            if any(a and a in hay for a in co["cn"]):
-                items.append(mk_item(co, f["title"] or f["text"][:60],
-                                     f["time"], f["url"], f["src"], "快讯"))
+    for f in flash:
+        hay = f["title"] + " " + f["text"]
+        cands = []
+        for co in COMPANIES:
+            hit = next((a for a in co["cn"] if a and a in hay), None)
+            if hit:
+                cands.append((co, hit))
+        if not cands:
+            continue
+        head = f["title"] or f["text"][:40]      # 标题; 无标题的源就看开头
+        co, hit = pick_company(hay, head, cands)
+        title = f["title"] or snippet(f["text"], hit)
+        items.append(mk_item(co, title, f["time"], f["url"],
+                             f["src"], "快讯", hit=hit))
 
     # 财新: 已移除。实测其接口只返回 ['flag','pic','tag','tagColor','title','top','url'],
     # 没有任何时间字段 → 无法判断新旧。宁可不要, 也不拿抓取时刻冒充发布时间。
