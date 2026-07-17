@@ -233,40 +233,8 @@ def collect_fast():
                 items.append(mk_item(co, f["title"] or f["text"][:60],
                                      f["time"], f["url"], f["src"], "快讯"))
 
-    # 财新: akshare 封装把时间字段丢了, 这里直连原始接口取真实发布时间。
-    # 原则: 拿不到可靠时间就整条丢弃, 绝不用“抓取时刻”冒充发布时间。
-    try:
-        import requests
-        r = requests.get("https://cxdata.caixin.com/api/dataplus/sjtPc/news",
-                         params={"pageNum": "1", "pageSize": "100", "showLabels": "true"},
-                         headers={"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                                "Chrome/143.0.0.0 Safari/537.36",
-                                  "referer": "https://cxdata.caixin.com/index/newsTab?tab=latest"},
-                         timeout=20)
-        rows = r.json()["data"]["data"]
-        if rows:
-            print("[debug] 财新原始字段:", sorted(rows[0].keys())[:20])
-            print("[debug] 财新首条样例:", {k: str(v)[:40] for k, v in list(rows[0].items())[:8]})
-        got, skipped = 0, 0
-        for d in rows:
-            t = _parse_epoch_or_str(d)
-            if t is None:
-                skipped += 1
-                continue
-            txt = str(d.get("summary") or d.get("title") or "").strip()
-            if not txt:
-                continue
-            for co in COMPANIES:
-                if any(a and a in txt for a in co["cn"]):
-                    items.append(mk_item(co, txt[:80], t, str(d.get("url") or ""),
-                                         "财新网", "快讯", exact=True))
-                    got += 1
-        if skipped:
-            errs.append(f"财新: {skipped} 条无可靠时间已丢弃(字段可能变了)")
-        print(f"[debug] 财新命中 {got} 条, 丢弃 {skipped} 条")
-    except Exception as e:
-        errs.append(f"财新: {e}")
+    # 财新: 已移除。实测其接口只返回 ['flag','pic','tag','tagColor','title','top','url'],
+    # 没有任何时间字段 → 无法判断新旧。宁可不要, 也不拿抓取时刻冒充发布时间。
 
     # 东财公告大全: A股全市场公告一次拉完(比逐家查巨潮快得多), 时间取发现时刻
     try:
@@ -369,6 +337,48 @@ def collect_slow():
     except ImportError:
         errs.append("feedparser 未安装, 跳过外媒")
     return items, errs
+
+
+def translate_missing(items):
+    """给所有还没有中文译文的英文外媒标题补译, 写入 zh 字段。
+    按“缺不缺译文”判断(而非“是不是新条目”), 否则存量条目永远等不到翻译。
+    译过一次就存住。没配 key 或调用失败 → 跳过, 页面照常显示英文原标题。"""
+    key = os.getenv("DEEPSEEK_API_KEY")
+    if not key:
+        return
+    todo = [i for i in items
+            if not i.get("zh") and i.get("kind") == "外媒"
+            and sum(c.isascii() and c.isalpha() for c in i["title"]) >= 8]
+    if not todo:
+        return
+    todo = todo[:150]                      # 单轮上限, 防止意外烧钱
+    import urllib.request
+    payload = [{"id": n, "t": it["title"][:160]} for n, it in enumerate(todo)]
+    prompt = ("把下面 JSON 数组里每条英文财经新闻标题翻成简洁准确的中文。"
+              "保留公司名、数字、专有名词; 不加评论、不解释。"
+              "只返回 JSON, 不要代码块标记, 格式: {\"0\":\"中文标题\",\"1\":\"...\"}\n\n"
+              + json.dumps(payload, ensure_ascii=False))
+    try:
+        base = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+        body = json.dumps({"model": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                           "temperature": 0.2,
+                           "messages": [{"role": "user", "content": prompt}]}).encode()
+        req = urllib.request.Request(base + "/chat/completions", data=body,
+              headers={"Authorization": "Bearer " + key,
+                       "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=180) as r:
+            txt = json.loads(r.read())["choices"][0]["message"]["content"]
+        txt = re.sub(r"^```(json)?|```$", "", txt.strip(), flags=re.M).strip()
+        res = json.loads(txt)
+        n = 0
+        for k, v in res.items():
+            i = int(k)
+            if 0 <= i < len(todo) and v:
+                todo[i]["zh"] = str(v).strip()
+                n += 1
+        print(f"[translate] 本轮补译 {n}/{len(todo)} 条外媒标题")
+    except Exception as e:
+        print("[warn] 翻译失败, 保留英文原标题:", e)
 
 # ── 合并 / 落盘 ─────────────────────────────────────────────────────────────
 # ── 阿里云 OSS(香港桶): 数据既从这里读, 也写回这里 ──────────────────────────
@@ -479,8 +489,35 @@ def selftest():
           f"国外 {sum(1 for c in COMPANIES if c['group']=='国外')}); "
           "去重 / 48h裁剪 / 唯一性 均通过")
 
+
+def smoketest():
+    """真正跑一遍 run() 全流程(不联网): 用假数据替换采集器, 关掉 OSS。
+    目的: 逮住 selftest 抓不到的错——比如函数没定义、名字对不上、字段拼错。
+    上一次 NameError('translate_missing') 就是因为没有这一步才漏到线上。"""
+    now = dt.datetime.now(CN)
+    fake_cn = [mk_item(COMPANIES[0], "DeepSeek 完成新一轮融资",
+                       now - dt.timedelta(minutes=5), "https://x", "财联社", "快讯")]
+    fake_intl = [mk_item([c for c in COMPANIES if c["group"] == "国外"][0],
+                         "OpenAI raises new round at record valuation",
+                         now - dt.timedelta(minutes=8), "https://y", "Reuters", "外媒")]
+    g = globals()
+    g["collect_fast"] = lambda: (list(fake_cn), [])
+    g["collect_slow"] = lambda: (list(fake_intl), [])
+    g["_bucket"] = lambda: None          # 不碰 OSS
+    g["load_data"] = lambda: {"items": [], "updated_fast": "", "updated_slow": ""}
+    saved = {}
+    g["save"] = lambda d: saved.update(d)
+    os.environ.pop("DEEPSEEK_API_KEY", None)   # 不联网翻译
+    for mode in ("fast", "slow"):
+        run(mode)
+        assert saved.get("items"), f"{mode}: 没有产出条目"
+        assert saved.get("updated_" + mode), f"{mode}: 没写更新时间"
+    print(f"[smoketest] OK — run(fast)/run(slow) 全流程跑通, 产出 {len(saved['items'])} 条")
+
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         selftest(); sys.exit(0)
+    if "--smoketest" in sys.argv:
+        selftest(); smoketest(); sys.exit(0)
     m = os.getenv("MODE", "fast").lower()
     run("slow" if m == "slow" else "fast")
