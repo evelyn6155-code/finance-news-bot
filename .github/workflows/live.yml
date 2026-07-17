@@ -13,7 +13,7 @@ on:
 
 # fast 与 slow 用各自的锁, 否则 slow(20-40分钟)会把每15分钟的 fast 全挤掉
 concurrency:
-  group: live-${{ github.event.schedule || 'manual' }}
+  group: live-${{ github.event.inputs.mode || github.event.schedule || 'x' }}
   cancel-in-progress: false
 
 jobs:
