@@ -13,6 +13,7 @@ live.py —— 实时监测采集器(喂 GitHub Pages 网页)
 本地自检: python live.py --selftest   (不联网)
 """
 import os, sys, json, re, hashlib, datetime as dt
+from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 
 CN = ZoneInfo("Asia/Shanghai")
@@ -180,16 +181,22 @@ def mk_item(co, title, time, url, src, kind, exact=True):
 def collect_fast():
     ak = _ak()
     flash, errs = [], []
+    _jobs = []
     def grab(fn, kw, mapper, src, url):
+        _jobs.append((fn, kw, mapper, src, url))   # 先登记, 稍后并发执行
+    def _run_grab(job):
+        fn, kw, mapper, src, url = job
+        out = []
         try:
             df = fn() if kw is None else fn(symbol=kw)
             for _, r in df.iterrows():
                 title, text, t, u = mapper(r)
                 if t:
-                    flash.append({"title": title, "text": text, "time": t,
-                                  "src": src, "url": u or url})
+                    out.append({"title": title, "text": text, "time": t,
+                                "src": src, "url": u or url})
         except Exception as e:
-            errs.append(f"{src}: {e}")
+            return out, f"{src}: {e}"
+        return out, None
 
     grab(ak.stock_info_global_cls, "全部",
          lambda r: (str(r.get("标题") or "").strip(), str(r.get("内容") or "").strip(),
@@ -210,6 +217,13 @@ def collect_fast():
          lambda r: (str(r.get("标题") or "").strip(), str(r.get("内容") or "").strip(),
                     _parse(r.get("发布时间")), str(r.get("链接") or "")),
          "富途牛牛", "https://news.futunn.com/")
+
+    # 5 个快讯源同时拉, 而不是排队等(原来是串行, 白白多花几分钟)
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        for out, err in ex.map(_run_grab, _jobs):
+            flash += out
+            if err:
+                errs.append(err)
 
     items = []
     for co in COMPANIES:
@@ -258,9 +272,18 @@ def collect_fast():
     try:
         a_map = {c["code"]: c for c in COMPANIES if c["market"] == "A" and c["code"]}
         now = dt.datetime.now(CN)
-        for d in (now, now - dt.timedelta(days=1)):
+        def _notice(d):
+            try:
+                return d, ak.stock_notice_report(symbol="全部", date=d.strftime("%Y%m%d"))
+            except Exception as e:
+                errs.append(f"东财公告大全 {d:%m-%d}: {e}")
+                return d, None
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            notice_pairs = list(ex.map(_notice, (now, now - dt.timedelta(days=1))))
+        for d, df in notice_pairs:
+            if df is None:
+                continue
             stamp = d.replace(hour=0, minute=0, second=0, microsecond=0)  # 只有日期, 不编时分
-            df = ak.stock_notice_report(symbol="全部", date=d.strftime("%Y%m%d"))
             for _, r in df.iterrows():
                 code = str(r.get("代码", "")).strip()
                 co = a_map.get(code)
@@ -277,16 +300,18 @@ def collect_fast():
 
 # ── slow: 巨潮公告 + 外媒 RSS ───────────────────────────────────────────────
 def collect_slow():
+    """港股公告 + 外媒。原来一家一家排队查, 现在并发, 从 20-40 分钟压到几分钟。"""
     items, errs = [], []
     start = dt.datetime.now(CN) - dt.timedelta(hours=KEEP_HOURS)
     ak = _ak()
-    # 公告
-    for co in COMPANIES:
-        if not co["code"] or co["market"] != "HK":   # A股公告已由快线的东财公告大全覆盖
-            continue
+
+    # ── 巨潮港股公告(A股公告已由快线的东财公告大全覆盖)──
+    hk = [c for c in COMPANIES if c["code"] and c["market"] == "HK"]
+    def _cninfo(co):
+        out = []
         try:
             df = ak.stock_zh_a_disclosure_report_cninfo(
-                symbol=co["code"], market=("港股" if co["market"] == "HK" else "沪深京"),
+                symbol=co["code"], market="港股",
                 start_date=start.strftime("%Y%m%d"),
                 end_date=dt.datetime.now(CN).strftime("%Y%m%d"))
             for _, r in df.iterrows():
@@ -297,16 +322,23 @@ def collect_slow():
                 url = ("http://www.cninfo.com.cn/new/disclosure/detail?"
                        f"stockCode={co['code']}&announcementId={r.get('announcementId','')}"
                        f"&orgId={r.get('orgId','')}&announcementTime={t:%Y-%m-%d}")
-                items.append(mk_item(co, title, t, url, "巨潮公告", "公告"))
+                out.append(mk_item(co, title, t, url, "巨潮公告", "公告"))
         except Exception as e:
-            errs.append(f"cninfo {co['name']}: {e}")
-    # 外媒
+            return out, f"cninfo {co['name']}: {e}"
+        return out, None
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for out, err in ex.map(_cninfo, hk):
+            items += out
+            if err:
+                errs.append(err)
+
+    # ── 外媒 Google News(每家一个查询, 并发)──
     try:
         import feedparser, urllib.parse
         s_utc = dt.datetime.now(UTC) - dt.timedelta(hours=KEEP_HOURS)
-        for co in COMPANIES:
-            if not co["en"]:
-                continue
+        targets = [c for c in COMPANIES if c["en"]]
+        def _gnews(co):
+            out = []
             try:
                 q = urllib.parse.quote(co["en"] + " when:2d")  # 让结果偏向最近48小时
                 feed = feedparser.parse(
@@ -324,55 +356,19 @@ def collect_slow():
                         src = e.source.title
                     elif " - " in title:
                         title, src = title.rsplit(" - ", 1)
-                    items.append(mk_item(co, title.strip(), t,
-                                         getattr(e, "link", ""), src or "外媒", "外媒"))
+                    out.append(mk_item(co, title.strip(), t,
+                                       getattr(e, "link", ""), src or "外媒", "外媒"))
             except Exception as e:
-                errs.append(f"gnews {co['name']}: {e}")
+                return out, f"gnews {co['name']}: {e}"
+            return out, None
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for out, err in ex.map(_gnews, targets):
+                items += out
+                if err:
+                    errs.append(err)
     except ImportError:
         errs.append("feedparser 未安装, 跳过外媒")
     return items, errs
-
-
-def translate_missing(items):
-    """给所有还没有中文译文的英文外媒标题补译, 写入 zh 字段。
-    按“缺不缺译文”判断, 而不是“是不是新条目”——否则存量条目永远等不到翻译。
-    译过一次就存住, 不会重复翻。没配 key 或失败 → 跳过, 页面照常显示英文。"""
-    key = os.getenv("DEEPSEEK_API_KEY")
-    if not key:
-        return
-    todo = [i for i in items
-            if not i.get("zh") and i.get("kind") == "外媒"
-            and sum(c.isascii() and c.isalpha() for c in i["title"]) >= 8]
-    if not todo:
-        return
-    todo = todo[:150]                      # 单轮上限, 防止意外烧钱
-    import urllib.request
-    payload = [{"id": n, "t": it["title"][:160]} for n, it in enumerate(todo)]
-    prompt = ("把下面 JSON 数组里每条英文财经新闻标题翻成简洁准确的中文。"
-              "保留公司名、数字、专有名词; 不加评论、不解释。"
-              "只返回 JSON, 不要代码块标记, 格式: {\"0\":\"中文标题\",\"1\":\"...\"}\n\n"
-              + json.dumps(payload, ensure_ascii=False))
-    try:
-        base = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
-        body = json.dumps({"model": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-                           "temperature": 0.2,
-                           "messages": [{"role": "user", "content": prompt}]}).encode()
-        req = urllib.request.Request(base + "/chat/completions", data=body,
-              headers={"Authorization": "Bearer " + key,
-                       "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=180) as r:
-            txt = json.loads(r.read())["choices"][0]["message"]["content"]
-        txt = re.sub(r"^```(json)?|```$", "", txt.strip(), flags=re.M).strip()
-        res = json.loads(txt)
-        n = 0
-        for k, v in res.items():
-            i = int(k)
-            if 0 <= i < len(todo) and v:
-                todo[i]["zh"] = str(v).strip()
-                n += 1
-        print(f"[translate] 本轮补译 {n}/{len(todo)} 条外媒标题")
-    except Exception as e:
-        print("[warn] 翻译失败, 保留英文原标题:", e)
 
 # ── 合并 / 落盘 ─────────────────────────────────────────────────────────────
 # ── 阿里云 OSS(香港桶): 数据既从这里读, 也写回这里 ──────────────────────────
