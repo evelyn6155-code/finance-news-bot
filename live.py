@@ -318,6 +318,11 @@ def _bucket():
     ep = os.getenv("OSS_ENDPOINT", "oss-cn-hongkong.aliyuncs.com")
     return oss2.Bucket(auth, "https://" + ep, os.environ["OSS_BUCKET"])
 
+
+# 只保留这些来源的条目(含历史累积); 其余来源的旧数据在下次合并时自动清掉。
+# 财联社接口虽暂挂(404), 仍列入白名单——等它复活, 抓到的会直接进来。
+ALLOWED_SRC = {"财联社", "新浪财经", "东方财富", "东财公告"}
+
 def load_data():
     b = _bucket()
     if b is not None:
@@ -366,6 +371,12 @@ def merge(old_items, new_items):
     if dirty:
         print(f"[clean] 丢弃 {len(dirty)} 条旧版脏数据(时间戳不可信)")
     old_items = [i for i in old_items if "exact" in i]
+    # 来源白名单: 清掉非指定来源的历史累积(外媒/同花顺/富途/巨潮/个股新闻等)
+    before = len(old_items)
+    old_items = [i for i in old_items if i.get("src") in ALLOWED_SRC]
+    new_items = [i for i in new_items if i.get("src") in ALLOWED_SRC]
+    if before != len(old_items):
+        print(f"[clean] 白名单过滤: 清掉 {before-len(old_items)} 条非指定来源的旧数据")
     by_id = {i["id"]: i for i in old_items}
     added = 0
     for it in new_items:
