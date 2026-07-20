@@ -165,10 +165,16 @@ def _parse_epoch_or_str(d):
     return None
 
 def _norm(t):
-    # 抹掉数字、标点、空格再比对: 同一条新闻不同源可能数字写法不同
-    # (如“770.22万个” vs “7,702,207个”), 只留中文/字母核心, 才能认出是同一条
-    t = re.sub(r"[0-9,.\uFF0C\u3002%万亿元股份手]+", "", str(t))
-    return re.sub(r"[\s\W_]+", "", t).lower()[:50]
+    # 归一化标题用于去重, 让同一条新闻的不同写法算出同一个 key:
+    #  ① 新浪爱用【标题】正文, 东财只给标题 → 若有【】, 取【】内的核心
+    #  ② 数字写法可能不同(770.22万 vs 7,702,207) → 抹掉数字
+    #  ③ 抹掉所有标点/空格, 只留中文与字母
+    t = str(t)
+    m = re.search(r"[【\[]([^】\]]+)[】\]]", t)   # 有方括号标题就用它
+    if m:
+        t = m.group(1)
+    t = re.sub(r"[0-9,.\uFF0C\u3002%万亿元股份手]+", "", t)
+    return re.sub(r"[\s\W_]+", "", t).lower()[:40]
 
 def mk_id(company, title):
     return hashlib.md5((company + "|" + _norm(title)).encode()).hexdigest()[:12]
@@ -377,15 +383,19 @@ def merge(old_items, new_items):
     new_items = [i for i in new_items if i.get("src") in ALLOWED_SRC]
     if before != len(old_items):
         print(f"[clean] 白名单过滤: 清掉 {before-len(old_items)} 条非指定来源的旧数据")
-    by_id = {i["id"]: i for i in old_items}
-    added = 0
-    for it in new_items:
-        if it["id"] not in by_id:
-            by_id[it["id"]] = it
-            added += 1
+    # 用"当前"去重规则重算 key(公司+归一化标题), 对存量也生效 → 旧重复立刻清掉
+    def dedup_key(i):
+        return _norm(i.get("company", "")) + "|" + _norm(i.get("title", ""))
+    best = {}
+    old_ids = {i["id"] for i in old_items}
+    for it in old_items + new_items:          # 存量在前, 同一条优先保留已有的
+        k = dedup_key(it)
+        if k not in best or _t(it["time"]) < _t(best[k]["time"]):
+            best[k] = it                      # 同一条留最早发布的那一份
     cutoff = dt.datetime.now(UTC) - dt.timedelta(hours=KEEP_HOURS)
-    keep = [i for i in by_id.values() if _t(i["time"]) >= cutoff]
+    keep = [i for i in best.values() if _t(i["time"]) >= cutoff]
     keep.sort(key=lambda i: _t(i["time"]), reverse=True)
+    added = sum(1 for i in keep if i["id"] not in old_ids)
     return keep[:MAX_ITEMS], added
 
 def run(mode):
